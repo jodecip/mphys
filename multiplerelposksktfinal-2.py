@@ -1,136 +1,48 @@
-#!/usr/bin/env python
-# coding: utf-8
-
-# In[2]:
-
-
-#!/usr/bin/env python
-# coding: utf-8
-
-# In[27]:
-
-
 import qutip as qt
 import numpy as np
 import scipy as sp
 import scipy.integrate as integrate
 from matplotlib import pyplot as plt
 import csv
-import time
-from scipy import sparse
-
-
-# In[2]:
-
-
-up = qt.basis(2,0)
-down = qt.basis(2,1)
-#tensor(A,B) = A (x) B
-singlet = (qt.tensor(up,down) - qt.tensor(down,up))/np.sqrt(2)
-Ps12 = singlet * singlet.dag() # |S><S|
-Ps12
-
-
-r = np.array([8.51,-14.25,6.55])
-
-rabs2 = np.linalg.norm(r)
-print(rabs2)
-#assuming radicals are displaced along z axis
-
-
-
-#A = electron electron dipolar coupling tensor
-
-
-# In[7]:
-
-
-#defining constants
-I = 1
-g = 2.01325
-muB = 9.274e-24 # J/T
-hbar = 1.0545718e-34  
-efreq = 1e-9 * g*muB/hbar
-omega0 =  efreq * 50e-3 
-#larmor frequency
-
-A = np.array([[-0.0995, 0.0029, 0],[0.0029, -0.0875, 0],[0, 0, 1.7569]]) * efreq # Mrad/s
-
-k0 = 1 # 1/us
-centreF = [-1.05254, -0.475079, -0.0260962]
-centreW = [7.45807,-14.7267,6.52316]
-r = np.array(centreW) - centreF
-#centre of spin density of flavin (F) radical pair and Trp (W), arbitrary reference frame (protein frame. Protein databank 4gu5. r is relative distance between these)
-print(r)
+import scipy.optimize as sp
+from joblib import Parallel, delayed
 
 
 # In[8]:
 
 
-Jxyz = (qt.spin_Jx, qt.spin_Jy, qt.spin_Jz)
-
-S1xyz = [qt.tensor(op(0.5), qt.identity(2), qt.identity(2*I+1)) for op in Jxyz]
-S2xyz = [qt.tensor(qt.identity(2), op(0.5), qt.identity(2*I+1)) for op in Jxyz]
-#components of spin
-S12xyz = [S1xyz[i] + S2xyz[i] for i in range(3)]
-
-Ps = qt.tensor(Ps12, qt.identity(2*I+1))
-#singlet projection operator
-rho0 = Ps / Ps.tr() 
-#density operator of initial state
-sqrt2 = np.sqrt(2)
-
-# 1/3 |S,nuc1><S,nuc1| + 1/3 |S,nuc0><S,nuc0| + 1/3 |S,nuc-1><S,nuc-1| 
+constants = dict(I = 1, g = 2.01325, muB = 9.274e-24, hbar = 1.0545718e-34)
+#print(constants)
 
 
-            
+# In[2]:
 
 
+def point_dipole_dipole_coupling(r):
+    '''This function to Find Dipole-Dipole Coupling for a given distance r.
+            Parameters:
+                    r(np.array): 1d array [x,y,z] components of the vector r between the two radicals
+                
+            Returns:
+                    A(np.array): 2d 3x3 matrix which is the electron-electron dipolar coupling tensor
+    '''
 
-def l1_norm_coherence(rho):
-    return np.sum(abs(rho-np.diag(np.diag(rho))))
-#defining a sum of absolute values of off-diaglonal matrix elements of density operator
+    dr3 = -4*np.pi*1e-7 * (2.0023193043617 * 9.27400968e-24)**2 / (4*np.pi*1e-30)/6.62606957e-34/1e6 # MHz * A^3
 
-def traceNuclei(rho):
-    if type(rho) is qt.Qobj:
-        return qt.ptrace(rho, (0,1))
+    if np.isscalar(r):
+        # assume r is aligned with z
+        d = dr3 / r**3
+        A = np.diag([-d, -d, 2*d])
     else:
-        n = 4
-        m = rho.shape[0]//n
-        return np.trace(rho.reshape(n,m,n,m), axis1=1, axis2=3)
-#defining a func to remove nuclear spin, to see if it effects coherence measures (subsec)  
+        norm_r = np.linalg.norm(r)
+        d = dr3 / norm_r**3
+        e = r / norm_r
+        A = d * (3 * e[:,np.newaxis] * e[np.newaxis,:] - np.eye(3))
+
+    return A
 
 
-
-#this transforms basis from spin(up,down) to S-T basis
-
-k0 = 1
-ks =  1 #singlet state decay constant
-kt =  1 #triplet state decay constant
-
-def calc_l1_norm_coherence(states):
-    
-    c = []
-    basisSTee = np.array([[0, 1/sqrt2, -1/sqrt2, 0],
-                      [1, 0,        0,       0],
-                      [0, 1/sqrt2,  1/sqrt2, 0],
-                      [0, 0,        0,       1]]).T
-    basisST = np.kron(basisSTee, np.eye(3))
-    
-    for state in states:
-        tr = state.tr()
-
-        rho_norm  = state.data / tr
-        rhoST = basisST.T @ (rho_norm @ basisST)
-        #amelia doesnt have the .data
-        rhoSTee = traceNuclei(rhoST)
-        c.append((l1_norm_coherence(rhoST) * tr, l1_norm_coherence(rhoSTee)* tr))
-    return c
-
-#defining a function to calculate a coherence measure (l1 norm coherence)
-
-
-# In[11]:
+# In[3]:
 
 
 def sphere(samples,rabs):
@@ -162,138 +74,157 @@ def sphere(samples,rabs):
     return np.array(points) *  (rabs)
 
 
+# In[4]:
 
-def point_dipole_dipole_coupling(r):
-#assume spins are at well defined points in space, in reality they are delocalised. Using centre of spin density.
 
-    dr3 = -4*np.pi*1e-7 * (2.0023193043617 * 9.27400968e-24)**2 / (4*np.pi*1e-30)/6.62606957e-34/1e6 # MHz * A^3
-#dr3 contains all constants involved in the hamtitonian for electron-electron dipolar coupling
-    
-    #this if statement normalises A
-    if np.isscalar(r):
-    # assume r is aligned with z
-        d = dr3 / r**3
-        A = np.diag([-d, -d, 2*d])
+def l1_norm_coherence(rho): 
+    return np.sum(abs(rho-np.diag(np.diag(rho)))) # sum of absolute values of off-diagnoal matrix elements of density operator 
+
+def traceNuclei(rho):
+    if type(rho) is qt.Qobj:
+        return qt.ptrace(rho, (0,1))
     else:
-        norm_r = np.linalg.norm(r)
-        d = dr3 / norm_r**3
-        e = r / norm_r
-        A = d * (3 * e[:,np.newaxis] * e[np.newaxis,:] - np.eye(3))
+        n = 4 # 4 states for 2 electrons 
+        m = rho.shape[0]//n
+        return np.trace(rho.reshape(n,m,n,m), axis1=1, axis2=3) # removes nuclear-part from density operator
 
-    return A
+sqrt2 = np.sqrt(2)
+basisSTee = np.array([[0, 1/sqrt2, -1/sqrt2, 0],
+                      [1, 0,        0,       0],
+                      [0, 1/sqrt2,  1/sqrt2, 0],
+                      [0, 0,        0,       1]]).T # each row represents a state (S, T0, T+,T-)
+basisST = np.kron(basisSTee, np.eye(3)) #this represents nuclear and electron spins
+# used to transform up/down basis to singlet/triplet basis 
 
-
-
-    
-
-
-def sy_sphere(number):
-    
-    
-    header = ['ps','psrec','yields']
-    #header = ['Orientation of Radicals', 'Maximum Singlet Yield', 'Orientation Responsible','Coherence with nuclear spin','Coherence without nuclear spin','Minimum Singlet Yield', 'Orientation Responsible','Coherence with nuclear spin','Coherence without nuclear spin']
-    with open('syield.csv'.format(number),'w') as f:
-        writer = csv.writer(f)
-        writer.writerow(header)
-    ropts = sphere(number,rabs2)
-    rmm = []
-
-    for r in ropts:
-        #rmm.append(sy_diff_oris(i))
-        print(r)
-        with open('syield.csv'.format(number),'a') as f:
-            writer = csv.writer(f)
-            writer.writerow(sy_diff_oris(r))
+def calc_l1_norm_coherence(states):
+        '''This function to calculate the coherence of a state.
+            Parameters:
+                    states(np.array): density matrix describing the state
+                
+            Returns:
+                    c(np.array): array containing coherences for all the states
+    '''
+    c = []
+    for state in states:
+        tr = state.tr()
+        #trace of the state
+        rho_norm = state.data / tr
+        #dividing by the trace to normalise
+        rhoST = basisST.T @ (rho_norm @ basisST)
+        #transforms the state into the singlet - triplet basis
+        rhoSTee = traceNuclei(rhoST)
+        #removes nuclear-part from the density matrix
+        c.append((l1_norm_coherence(rhoST) * tr, l1_norm_coherence(rhoSTee) * tr))
+        #caulcates coherence
         
-
-
-
-def sy_diff_oris_new(r,A,j):
+    return c
     
+
+
+# In[ ]:
+
+
+def calc_negativity(states):
+    '''This function to calculate the negativity (entanglement measuere) of a state.
+            Parameters:
+                    states(np.array): density matrix describing the state
+                
+            Returns:
+                    N(np.array): array containing negativities for all the states
+    '''
+    N = []
+    for state in states:
+        tr = state.tr()
+        rho_norm  = state / tr
+        rho_norm_ee = traceNuclei(rho_norm)
+        N.append(qt.negativity(rho, 1) * tr)
+    return N
+
+
+# In[5]:
+
+
+def sy_diff_oris(r,j,kt): 
+    '''This is the master function. For different values of r (vector pointing between the radicals), it finds the magentic field orientations which give the max and min singlet yields. For these orienatations of the magnetic field, coherence and entanglement measures are calculated
+            Parameters:
+                    r(np.array): 1d array [x,y,z] components of the vector r between the two radicals
+                    j(int): magnitude of r
+                    kt(int): value of kt (triplet decay rate constant)
+                
+            Returns:
+                    filedata(np.array): array containing all the neccessary information about each different r vector.
+    '''
     mag = j
-   # Mrad/s
-    ks = 1
-    kt = 1
     I = 1
     g = 2.01325
     muB = 9.274e-24 # J/T
-    hbar = 1.0545718e-34  
+    hbar = 1.0545718e-34  # m^2 kg / s
     efreq = 1e-9 * g*muB/hbar
     omega0 =  efreq * 50e-3 
-    #larmor frequency
-    A = np.array([[-0.0995, 0.0029, 0],[0.0029, -0.0875, 0],[0, 0, 1.7569]]) * efreq 
+    #omega0 = 1.4 * 2*np.pi # 1.4 MHz -> rad/us
+    A = np.array([[-0.0995, 0.0029, 0],[0.0029, -0.0875, 0],[0, 0, 1.7569]]) * efreq # Mrad/s
+    ks = 1 # singlet state decay constant /us
+    #kt = 100 # triplet state decay constant /us
+    # kt >> ks otherwise unchanged from before - look for a good value for kt
     Jxyz = (qt.spin_Jx, qt.spin_Jy, qt.spin_Jz)
     S1xyz = [qt.tensor(op(0.5), qt.identity(2), qt.identity(2*I+1)) for op in Jxyz]
     S2xyz = [qt.tensor(qt.identity(2), op(0.5), qt.identity(2*I+1)) for op in Jxyz]
-    #components of spin
     S12xyz = [S1xyz[i] + S2xyz[i] for i in range(3)]
-
     up = qt.basis(2,0)
     down = qt.basis(2,1)
-    #tensor(A,B) = A (x) B
     singlet = (qt.tensor(up,down) - qt.tensor(down,up))/np.sqrt(2)
-    Ps12 = singlet * singlet.dag()
+    Ps12 = singlet * singlet.dag() # |S><S|
     Ps = qt.tensor(Ps12, qt.identity(2*I+1))
-    #singlet projection operator
-    Pt = 1 - Ps
-    rho0 = Ps / Ps.tr() 
-    #density operator of initial state
-    sqrt2 = np.sqrt(2)
-
+    Pt = 1 - Ps #Triplet projection operator, with 1 as the identity operator
+    rho0 = Ps / Ps.tr() # 1/3 |S,nuc1><S,nuc1| + 1/3 |S,nuc0><S,nuc0| + 1/3 |S,nuc-1><S,nuc-1| 
+    tlist = np.linspace(0, 14/ks, 14001)
+    yields = []
+    coherences = []
+    negativities = []
+    orismm =[]
+    osimm = []
+    
     Hhfc = 0
     for i in range(3):
         for j in range(3):
             if A[i,j] != 0:
                 Hhfc += A[i,j] * qt.tensor(Jxyz[i](0.5), qt.identity(2), Jxyz[j](I))
-
+                #hyperfine coupling hamiltonian 
+    
     D = point_dipole_dipole_coupling(r) * 2*np.pi
+     
     Heed = 0
     for i in range(3):
         for j in range(3):
             if D[i,j] != 0:
                 Heed += D[i,j] * qt.tensor(Jxyz[i](0.5), Jxyz[j](0.5), qt.identity(3))
-    opt = qt.Options()
-    opt.store_states = True
-    #stores all states
-#ft is the sum of the states
-    tlist = np.linspace(0, 14/ks, 14001)
-    yields = []
-    coherences = []
-    negativities = []
-        
+                #electron electron dipolar coupling hamiltonian 
+                
+    opt = qt.Options() 
+    opt.store_states = True #function will store all states as time passes
 
-  
-    orismm =[]
-
-
+    tlist = np.linspace(0, 14/ks, 14001) 
+    
     oris = sphere(3,1)
-
-    K = (ks/2 * Ps + kt/2 * Pt)
-    #K replaces k0 from here on 
-    #Ps + Pt = 1 by definition
+    #generates magnetic field orientations
+    
+    K = (ks/2 * Ps) + (kt/2 * Pt)
     b = -np.asarray(qt.operator_to_vector(rho0).data.todense()).reshape(-1)
-
-
+    yields = []
     for ori in oris:
         omega0vec = ori * omega0
         Hzee = sum(omega0vec[i] * S12xyz[i] for i in range(3))
         H = Hzee + Hhfc + Heed
         Heff = H - (1j * K)
-        #effective hamiltonian
-        Heff_conj = Heff.conj().trans()
-        Leff = -1j*(qt.superoperator.spre(Heff) - qt.superoperator.spost(Heff_conj))
-        #i changed this
-        #Leff = -1j*qt.spre(Heff) + 1j*qt.spost(Heff.conj().trans())
-        
-        #effective louvillian
-        S = Leff.data
-        x = sparse.linalg.spsolve(S, b)
+        #effective Hamiltonian
+        Leff = -1j*qt.spre(Heff) + 1j*qt.spost(Heff.conj().trans())
+        A1 = Leff.data
+        x = scipy.sparse.linalg.linsolve.spsolve(A1, b)
         x = qt.vec2mat(x)
         ys = ks * np.real( (Ps * qt.Qobj(x, dims=rho0.dims)).tr() )
         yields.append(ys)
         
-        
-   
+    
     max2 = yields.index(max(yields))
     min2 = yields.index(min(yields))
     max3 = oris[yields.index(max(yields))]
@@ -301,82 +232,79 @@ def sy_diff_oris_new(r,A,j):
     #this is the magnetic field orientation which gives the max and min singlet state yield
     orismm.append(max3)
     orismm.append(min3)
+    
 
-
+    coherences = []
+    negativities = []
+    states = []
     for ori in orismm:
         omega0vec = ori * omega0
         Hzee = sum(omega0vec[i] * S12xyz[i] for i in range(3))
         H = Hzee + Hhfc + Heed
         Heff = H - (1j * K)
-        Heff_conj = Heff.conj().trans()
-        #conjugate transpose of the effective hamiltonian
-        Leff = -1j*(qt.superoperator.spre(Heff) - qt.superoperator.spost(Heff_conj))
-        #effective louivillian
-        res = qt.mesolve(Leff, rho0, tlist, e_ops=[Ps], options=opt)
+        #effective Hamiltonian
+        Heff_conj = Heff.conj().trans() 
+        Leff = -1j * ( qt.superoperator.spre(Heff)- qt.superoperator.spost(Heff_conj))
+        res = qt.mesolve(Leff, rho0, tlist, e_ops=[Ps], options=opt) 
+        # singlet probability as function of time 
         ps = res.expect[0]
-        ys = integrate.simps(ps, tlist) * ks
-        yields.append(ys)
-       
+        ys = ks * integrate.simps(ps, tlist)
         c1t = calc_l1_norm_coherence(res.states)
-        c1measures = integrate.simps(np.array(c1t), tlist, axis=0)
+        c1measures = integrate.simps(np.array(c1t), tlist, axis=0) 
+        # yield of coherence measures
         coherences.append(c1measures)
-        
-        #rho_pt = partial_transpose(res.states,1)
-        #N = ((rho_pt.dag() * rho_pt).sqrtm().tr().real - 1)/2.0
-        # N = calc_negativity(res.states)
-        # Nmeasure = integrate.simps(np.array(N), tlist)
-        # negativities.append(Nmeasure)
+        N = calc_negativity(res.states)
+        Nmeasure = integrate.simps(np.array(N), tlist)
+        negativities.append(Nmeasure)
+    
 
-        
-        
-    filedata = [mag, r, max(yields), max3, coherences[0][0], coherences[0][1], min(yields), min3, coherences[1][0], coherences[1][1]]
+    
+    filedata = [mag, r, max(yields), max3, coherences[0][0], coherences[0][1], min(yields), min3, coherences[1][0], coherences[1][1], negativities]
 
     return filedata
 
 
-
-    
-
-
-# In[40]:
-A = np.array([[-0.0995, 0.0029, 0],[0.0029, -0.0875, 0],[0, 0, 1.7569]]) * efreq # Mrad/s
+# In[6]:
 
 
-
-
-#this function runs the sy_diff_oris function for all ropts for each relposition and writes the data to a csv file
 def write(j,number):
+    '''This function runs the above sy_diff_oris function for all ropts for each relposition and writes the data to a csv file
+            Parameters:
+                    j(int): magnitude of r
+                    number(int): the quantity of different r vectors wanted
+    '''
     ropts = sphere(number,j)
     for r in ropts: 
-        with open('diffrandmksktfinal4.csv'.format(number),'a') as f:
+        with open('difforisneg.csv'.format(number),'a') as f:
             writer = csv.writer(f)
-            result = sy_diff_oris_new(r,A,j)
+            result = sy_diff_oris(r,j,1)
             writer.writerow(result)
-            result = [[],[],[],[],[],[],[],[],[],[]]
+            result = [[],[],[],[],[],[],[],[],[],[],[]]
 
 
 
 #runs through different r values with parallelization
 from joblib import Parallel, delayed
 def sy_spherejob(number):
+    '''Thius function runs the above sy_diff_oris function for all ropts for each relposition and writes the data to a csv file
+            Parameters:
+                    number(int): the quantity of different r vectors wanted
+    '''
     
     
 
     header = ['Distance between Radicals','Orientation of Radicals', 'Maximum Singlet Yield', 'Orientation Responsible','Coherence with nuclear spin','Coherence without nuclear spin','Minimum Singlet Yield', 'Orientation Responsible','Coherence with nuclear spin','Coherence without nuclear spin']
-    with open('diffrandmksktfinal4.csv'.format(number),'w') as f:
+    with open('difforisneg.csv'.format(number),'w') as f:
         writer = csv.writer(f)
         writer.writerow(header)
          
-    relposition = [3,4] 
-    result = Parallel(n_jobs=1)(delayed(write)(j,number) for j in relposition)
+    relposition = [3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18] 
+    #the distance between the radicals (in angstrom)
+    result = Parallel(n_jobs=-1)(delayed(write)(j,number) for j in relposition)
       
             
 
-sy_spherejob(3)
-
-
-# In[ ]:
-
+sy_spherejob(50)
 
 
 
